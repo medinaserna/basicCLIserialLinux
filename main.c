@@ -6,6 +6,9 @@
 #include <errno.h>
 #include <termios.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/select.h>
 
 
 int open_serial_port(const char *device);
@@ -52,6 +55,7 @@ int main(int argc, char *argv[]) {
 
 int open_serial_port(const char *device) {
     int fd = open(device, O_RDWR | O_NOCTTY | O_NDELAY);
+        
     if (fd == -1) {
         perror("Unable to open serial port");
         return -1;
@@ -64,12 +68,20 @@ int open_serial_port(const char *device) {
     cfsetispeed(&options, B115200);
     cfsetospeed(&options, B115200);
 
-    // Configure serial settings
-    options.c_cflag |= (CLOCAL | CREAD); // Enable receiver, local mode
-    options.c_cflag &= ~PARENB;          // No parity
-    options.c_cflag &= ~CSTOPB;          // 1 stop bit
-    options.c_cflag &= ~CSIZE;           // Clear current character size mask
-    options.c_cflag |= CS8;              // 8 data bits
+
+    options.c_cflag = (options.c_cflag & ~CSIZE) | CS8;  // 8 data bits
+    options.c_iflag &= ~IGNBRK;  // Disable break processing
+    options.c_lflag = 0;         // No signaling chars, no echo, no canonical processing
+    options.c_oflag = 0;         // No remapping, no delays
+    options.c_cc[VMIN] = 1;      // Read at least 1 character
+    options.c_cc[VTIME] = 1;     // 0.1 seconds timeout
+
+    options.c_iflag &= ~(IXON | IXOFF | IXANY); // Turn off software flow control
+    options.c_cflag |= (CLOCAL | CREAD);        // Enable receiver, ignore modem control lines
+    options.c_cflag &= ~(PARENB | PARODD);      // Disable parity
+    options.c_cflag &= ~CSTOPB;                 // 1 stop bit
+    //options.c_cflag &= ~CRTSCTS;                // Disable hardware flow control
+
 
     // Apply settings
     tcsetattr(fd, TCSANOW, &options);
@@ -90,6 +102,28 @@ int write_to_serial(int fd, const char *data) {
 
 
 int read_from_serial(int fd, char *buffer, size_t buffer_size) {
+    // Set up the file descriptor set
+    fd_set read_fds;
+    FD_ZERO(&read_fds);
+    FD_SET(fd, &read_fds);
+
+    // Set up the timeout (e.g., 2 seconds)
+    struct timeval timeout;
+    timeout.tv_sec = 2; // Timeout in seconds
+    timeout.tv_usec = 0;
+
+    // Wait for the serial port to become ready
+    int result = select(fd + 1, &read_fds, NULL, NULL, &timeout);
+    if (result < 0) {
+        perror("select() failed");
+        return -1;
+    } else if (result == 0) {
+        fprintf(stderr, "Timeout waiting for data on the serial port.\n");
+        return -1;
+    }
+
+    // Read data from the serial port
+
     int bytes_read = read(fd, buffer, buffer_size - 1);
     if (bytes_read < 0) {
         perror("Failed to read from serial port");
@@ -100,4 +134,5 @@ int read_from_serial(int fd, char *buffer, size_t buffer_size) {
     buffer[bytes_read] = '\0';
     return bytes_read;
 }
+
 
